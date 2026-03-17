@@ -16,6 +16,59 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # =====================================================
+# Streamlit Web App UI Setup & CSS 魔法美化
+# =====================================================
+st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬")
+
+# 注入高级 CSS UI 样式
+st.markdown("""
+<style>
+/* 隐藏默认的水印和菜单，更像独立商业软件 */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* 上传框美化 */
+.css-1r6slb0, [data-testid="stFileUploadDropzone"] {
+    border: 2px dashed #4A90E2;
+    border-radius: 10px;
+    padding: 20px;
+    background-color: #F8FBFF;
+}
+
+/* 运行按钮变身酷炫渐变色 + 悬浮动效 */
+div.stButton > button:first-child {
+    background: linear-gradient(90deg, #4A90E2 0%, #50E3C2 100%);
+    color: white;
+    border-radius: 8px;
+    border: none;
+    padding: 10px 24px;
+    font-weight: bold;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    transition: all 0.3s ease;
+}
+div.stButton > button:first-child:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+}
+
+/* 选项卡（Tabs）优化 */
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    white-space: pre-wrap;
+    background-color: #F0F2F6;
+    border-radius: 5px 5px 0px 0px;
+    gap: 1px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🧬 Seahorse Analysis Web Tool (Ultimate Edition)")
+st.markdown("Powered by **Calamine** engine & **Plotly** Interactive Graphics.")
+
+# =====================================================
 # Core Logic (Matplotlib saving & Math)
 # =====================================================
 def parse_phases_from_wave(xls):
@@ -243,7 +296,7 @@ def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr
     m, s = g.mean().unstack(level=0), g.sem().unstack(level=0)
     if m.empty: return
 
-    fig, ax = plt.subplots(figsize=(10, 5)) # Slightly wider for legend
+    fig, ax = plt.subplots(figsize=(10, 5))
     for col in m.columns:
         ax.errorbar(m.index, m[col], yerr=s[col], label=col, marker='o', capsize=3, markersize=5, linewidth=2)
 
@@ -262,7 +315,6 @@ def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr
     ylabel_unit = "(pmol/min)" if metric_col == "ocr" else "(mpH/min)"
     ax.set_ylabel(f"{metric_upper} {ylabel_unit}" if suffix == "raw" else f"{metric_upper} {ylabel_unit}/Norm. Unit")
     
-    # Legend outside to the right
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
     ax.grid(True, linestyle=':', alpha=0.6)
     ax.set_ylim(bottom=min(0, ymin), top=ymax * 1.1)
@@ -308,7 +360,6 @@ def create_plotly_kinetic(df, suffix, ranges, phase_order, metric_col="ocr"):
         title=f"<b>Interactive Kinetic {metric_upper}</b>",
         xaxis_title="Measurement", yaxis_title=ylabel,
         hovermode="x unified", template="plotly_white",
-        # 【修复】：将图例移到右侧垂直排列，X轴开启自动边距
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
         xaxis=dict(automargin=True)
     )
@@ -319,8 +370,6 @@ def create_plotly_bar(df, metric, suffix, control):
     m, s = g.mean(), g.std()
     
     fig = go.Figure()
-    
-    # 【修复】：强制底层 X 轴为纯数字以解决散点错位问题
     x_positions = list(range(len(m.index)))
     
     fig.add_trace(go.Bar(
@@ -363,7 +412,6 @@ def create_plotly_bar(df, metric, suffix, control):
         title=f"<b>{metric}</b>", yaxis_title=ylabel,
         template="plotly_white", 
         height=550, 
-        # 【修复】：表面标签替换回真实名字，倾斜45度并自动扩展底边距防遮挡
         xaxis=dict(
             tickmode='array',
             tickvals=x_positions,
@@ -393,7 +441,8 @@ def create_plotly_plate_qc(unselected):
 # =====================================================
 # Extractor & Caching Engine
 # =====================================================
-@st.cache_resource(show_spinner=False)
+# 【核心优化】：加入 max_entries=1 极限内存锁！强制只保留最新一份文件的内存
+@st.cache_resource(max_entries=1, show_spinner=False)
 def extract_all_data(file_bytes):
     file_io = io.BytesIO(file_bytes)
     selected, unselected = detect_wells_by_fg_theme(file_io)
@@ -420,24 +469,15 @@ def extract_all_data(file_bytes):
             
     return unselected, phases, cell_counts, rate_raw, rate_norm
 
-# =====================================================
-# 工具函数：强制应用用户的自定义排版顺序
-# =====================================================
 def apply_custom_order(df, order):
     if df is None or df.empty: return df
     df = df[df["group"].isin(order)].copy()
     df["group"] = pd.Categorical(df["group"], categories=order, ordered=True)
     return df
 
-
 # =====================================================
-# Streamlit Web App UI
+# Streamlit Web App UI Layout
 # =====================================================
-st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬")
-
-st.title("🧬 Seahorse Analysis Web Tool (Ultimate Edition)")
-st.markdown("Powered by **Calamine** engine & **Plotly** Interactive Graphics.")
-
 with st.sidebar:
     st.header("1. Upload Data")
     uploaded_file = st.file_uploader("Upload Wave Excel (.xlsx)", type=["xlsx"])
@@ -451,38 +491,36 @@ with st.sidebar:
         phase_order = [p["name"] for p in phases]
         defaults = {p["name"]: p["cycles"] for p in phases}
         
-        st.header("2. Assay Settings")
-        st.markdown("Cycles per Phase:")
-        cycle_vars = {}
-        cols = st.columns(2)
-        for i, phase in enumerate(phase_order):
-            with cols[i % 2]:
-                cycle_vars[phase] = st.number_input(f"{phase}", min_value=1, max_value=20, value=defaults.get(phase, 3))
+        # 【核心优化】：使用折叠面板 (Expander) 收纳冗长的设置，让侧边栏极简
+        with st.expander("⚙️ Advanced Assay Settings (Cycles & Layout)", expanded=False):
+            st.markdown("Cycles per Phase:")
+            cycle_vars = {}
+            cols = st.columns(2)
+            for i, phase in enumerate(phase_order):
+                with cols[i % 2]:
+                    cycle_vars[phase] = st.number_input(f"{phase}", min_value=1, max_value=20, value=defaults.get(phase, 3))
+            
+            st.markdown("---")
+            st.info("💡 Drag and drop the tags below to customize the X-Axis order!")
+            original_groups = []
+            if rate_raw is not None:
+                for g in rate_raw["group"].dropna():
+                    if g not in original_groups and g.lower() not in ["background", "unassigned"]:
+                        original_groups.append(g)
+            
+            final_group_order = st.multiselect(
+                "Chart X-Axis Order:", 
+                options=original_groups, 
+                default=original_groups
+            )
         
-        st.markdown("---")
-        
-        st.header("3. X-Axis Layout & Control")
-        st.info("💡 **Drag and drop** the tags below to customize the order of bars on your charts!")
-        
-        original_groups = []
-        if rate_raw is not None:
-            for g in rate_raw["group"].dropna():
-                if g not in original_groups and g.lower() not in ["background", "unassigned"]:
-                    original_groups.append(g)
-        
-        final_group_order = st.multiselect(
-            "Chart X-Axis Order:", 
-            options=original_groups, 
-            default=original_groups
-        )
-        
+        st.header("2. Analysis")
         control_group = st.selectbox("Select Control Group (for P-values):", final_group_order) if final_group_order else ""
-
-        run_btn = st.button("🚀 Run Analysis", type="primary", use_container_width=True)
+        run_btn = st.button("🚀 Run Analysis", use_container_width=True)
 
 if uploaded_file and run_btn:
     if not final_group_order:
-        st.error("Please select at least one group in the sidebar to plot.")
+        st.error("Please select at least one group in the settings to plot.")
         st.stop()
 
     with st.spinner("Processing Metrics & Rendering Plotly..."):
@@ -510,7 +548,7 @@ if uploaded_file and run_btn:
         
         ranges = derive_ranges_from_cycles(cycle_vars, phase_order)
         
-        st.success("✅ Analysis Complete! Layout adjusted perfectly. You can interact with charts below.")
+        st.success("✅ Analysis Complete! You can interact with charts below.")
 
         zip_buffer = io.BytesIO()
         
@@ -523,12 +561,10 @@ if uploaded_file and run_btn:
             res_raw = apply_custom_order(res_raw, final_group_order)
             res_raw = res_raw.sort_values(["group", "well"])
             
-            # Backend Save
             save_results(res_raw, os.path.join(temp_dir, "raw"), "raw", control_group)
             save_kinetic_graphs(rate_raw, os.path.join(temp_dir, "raw"), "raw", ranges, phase_order, "ocr")
             save_kinetic_graphs(rate_raw, os.path.join(temp_dir, "raw"), "raw", ranges, phase_order, "ecar")
             
-            # Frontend Render
             st.markdown("### 🔹 Raw Data Results")
             tab_k_raw, tab_b_raw = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
             
@@ -559,12 +595,10 @@ if uploaded_file and run_btn:
             res_norm = apply_custom_order(res_norm, final_group_order)
             res_norm = res_norm.sort_values(["group", "well"])
             
-            # Backend Save
             save_results(res_norm, os.path.join(temp_dir, "normalized"), "norm", control_group)
             save_kinetic_graphs(rate_norm, os.path.join(temp_dir, "normalized"), "norm", ranges, phase_order, "ocr")
             save_kinetic_graphs(rate_norm, os.path.join(temp_dir, "normalized"), "norm", ranges, phase_order, "ecar")
 
-            # Frontend Render
             st.markdown("### 🔹 Normalized Data Results")
             tab_k_norm, tab_b_norm = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
             
@@ -589,7 +623,6 @@ if uploaded_file and run_btn:
         st.markdown("### 🧫 Plate QC")
         st.plotly_chart(create_plotly_plate_qc(unselected), use_container_width=False)
 
-        # Create ZIP
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(temp_dir):
                 for file in files:
@@ -597,7 +630,6 @@ if uploaded_file and run_btn:
                     arcname = os.path.relpath(file_path, temp_dir)
                     zipf.write(file_path, arcname)
 
-        # Download Button
         st.sidebar.markdown("---")
         st.sidebar.download_button(
             label="📦 Download HD Matplotlib ZIP",
@@ -607,7 +639,7 @@ if uploaded_file and run_btn:
             type="primary"
         )
         
-        # 强制垃圾回收，保障云端不爆内存
+        # 强制释放占用内存
         del rate_raw, rate_norm
         gc.collect()
 
