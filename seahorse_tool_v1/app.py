@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 # =====================================================
 # Streamlit Web App UI Setup & CSS 魔法美化
 # =====================================================
-st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬",initial_sidebar_state="expanded")
 
 # 注入高级 CSS UI 样式
 st.markdown("""
@@ -66,6 +66,7 @@ div.stButton > button:first-child:hover {
 """, unsafe_allow_html=True)
 
 st.title("🧬 Seahorse Analysis Web Tool (Ultimate Edition)")
+
 st.markdown("Powered by **Calamine** engine & **Plotly** Interactive Graphics.")
 
 # =====================================================
