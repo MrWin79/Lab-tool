@@ -236,6 +236,8 @@ def save_results(df, outdir, suffix, control):
         fig.tight_layout()
         fig.savefig(os.path.join(outdir, f"{metric}_{suffix}.png"), dpi=300)
         plt.close(fig)
+        
+    plt.close('all') # 🛡️ 内存护盾 1：画完强制清空 Matplotlib 画板
 
 def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr"):
     if metric_col not in df.columns: return
@@ -243,7 +245,7 @@ def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr
     m, s = g.mean().unstack(level=0), g.sem().unstack(level=0)
     if m.empty: return
 
-    fig, ax = plt.subplots(figsize=(10, 5)) # Slightly wider for legend
+    fig, ax = plt.subplots(figsize=(10, 5)) 
     for col in m.columns:
         ax.errorbar(m.index, m[col], yerr=s[col], label=col, marker='o', capsize=3, markersize=5, linewidth=2)
 
@@ -262,7 +264,6 @@ def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr
     ylabel_unit = "(pmol/min)" if metric_col == "ocr" else "(mpH/min)"
     ax.set_ylabel(f"{metric_upper} {ylabel_unit}" if suffix == "raw" else f"{metric_upper} {ylabel_unit}/Norm. Unit")
     
-    # Legend outside to the right
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
     ax.grid(True, linestyle=':', alpha=0.6)
     ax.set_ylim(bottom=min(0, ymin), top=ymax * 1.1)
@@ -271,6 +272,8 @@ def save_kinetic_graphs(df, outdir, suffix, ranges, phase_order, metric_col="ocr
     os.makedirs(outdir, exist_ok=True)
     fig.savefig(os.path.join(outdir, f"Kinetic_{metric_upper}_{suffix}.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
+    
+    plt.close('all') # 🛡️ 内存护盾 2：清理动力学曲线画板
 
 
 # =====================================================
@@ -308,7 +311,7 @@ def create_plotly_kinetic(df, suffix, ranges, phase_order, metric_col="ocr"):
         title=f"<b>Interactive Kinetic {metric_upper}</b>",
         xaxis_title="Measurement", yaxis_title=ylabel,
         hovermode="x unified", template="plotly_white",
-        # 【修复】：将图例移到右侧垂直排列，X轴开启自动边距
+        height=600, # 👁️ 视觉优化 1：强行拔高图表，让密集的曲线散开
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
         xaxis=dict(automargin=True)
     )
@@ -319,8 +322,6 @@ def create_plotly_bar(df, metric, suffix, control):
     m, s = g.mean(), g.std()
     
     fig = go.Figure()
-    
-    # 【修复】：强制底层 X 轴为纯数字以解决散点错位问题
     x_positions = list(range(len(m.index)))
     
     fig.add_trace(go.Bar(
@@ -363,7 +364,6 @@ def create_plotly_bar(df, metric, suffix, control):
         title=f"<b>{metric}</b>", yaxis_title=ylabel,
         template="plotly_white", 
         height=550, 
-        # 【修复】：表面标签替换回真实名字，倾斜45度并自动扩展底边距防遮挡
         xaxis=dict(
             tickmode='array',
             tickvals=x_positions,
@@ -393,7 +393,8 @@ def create_plotly_plate_qc(unselected):
 # =====================================================
 # Extractor & Caching Engine
 # =====================================================
-@st.cache_resource(show_spinner=False)
+# 🛡️ 内存护盾 3：强制限制缓存条目，只存最新 1 份数据，1小时过期
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=3600)
 def extract_all_data(file_bytes):
     file_io = io.BytesIO(file_bytes)
     selected, unselected = detect_wells_by_fg_theme(file_io)
@@ -433,7 +434,7 @@ def apply_custom_order(df, order):
 # =====================================================
 # Streamlit Web App UI
 # =====================================================
-st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬", initial_sidebar_state="expanded")
 
 st.title("🧬 Seahorse Analysis Web Tool (Ultimate Edition)")
 st.markdown("Powered by **Calamine** engine & **Plotly** Interactive Graphics.")
@@ -447,7 +448,11 @@ with st.sidebar:
         
         with st.spinner("⚡ Extracting Data (Superfast Mode)..."):
             unselected, phases, cell_counts, rate_raw, rate_norm = extract_all_data(file_bytes)
-        
+            
+            # 🛡️ 内存护盾 4：阅后即焚，解析完马上释放几十兆的原始二进制文件
+            del file_bytes
+            gc.collect()
+            
         phase_order = [p["name"] for p in phases]
         defaults = {p["name"]: p["cycles"] for p in phases}
         
@@ -533,20 +538,22 @@ if uploaded_file and run_btn:
             tab_k_raw, tab_b_raw = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
             
             with tab_k_raw:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig_k_ocr = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ocr")
-                    if fig_k_ocr: st.plotly_chart(fig_k_ocr, use_container_width=True)
-                with c2:
-                    fig_k_ecar = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ecar")
-                    if fig_k_ecar: st.plotly_chart(fig_k_ecar, use_container_width=True)
+                # 👁️ 视觉优化 2：解除双列并排，让折线图独享 100% 宽度！
+                fig_k_ocr = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ocr")
+                if fig_k_ocr: st.plotly_chart(fig_k_ocr, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True) # 增加一些呼吸空间
+                
+                fig_k_ecar = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ecar")
+                if fig_k_ecar: st.plotly_chart(fig_k_ecar, use_container_width=True)
                     
             with tab_b_raw:
                 metrics = [c for c in res_raw.columns if c not in ["group", "well"]]
-                cols = st.columns(3)
+                # 👁️ 视觉优化 3：柱状图从一行 3 个改为一行 2 个，留出空间防止挤压
+                cols = st.columns(2) 
                 for i, m in enumerate(metrics):
                     fig_bar = create_plotly_bar(res_raw, m, "raw", control_group)
-                    with cols[i % 3]:
+                    with cols[i % 2]:
                         st.plotly_chart(fig_bar, use_container_width=True)
 
         # --- NORMALIZED DATA ---
@@ -569,20 +576,20 @@ if uploaded_file and run_btn:
             tab_k_norm, tab_b_norm = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
             
             with tab_k_norm:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig_k_ocr_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ocr")
-                    if fig_k_ocr_n: st.plotly_chart(fig_k_ocr_n, use_container_width=True)
-                with c2:
-                    fig_k_ecar_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ecar")
-                    if fig_k_ecar_n: st.plotly_chart(fig_k_ecar_n, use_container_width=True)
+                fig_k_ocr_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ocr")
+                if fig_k_ocr_n: st.plotly_chart(fig_k_ocr_n, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                fig_k_ecar_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ecar")
+                if fig_k_ecar_n: st.plotly_chart(fig_k_ecar_n, use_container_width=True)
                     
             with tab_b_norm:
                 metrics = [c for c in res_norm.columns if c not in ["group", "well"]]
-                cols = st.columns(3)
+                cols = st.columns(2)
                 for i, m in enumerate(metrics):
                     fig_bar_n = create_plotly_bar(res_norm, m, "norm", control_group)
-                    with cols[i % 3]:
+                    with cols[i % 2]:
                         st.plotly_chart(fig_bar_n, use_container_width=True)
 
         st.divider()
@@ -607,7 +614,7 @@ if uploaded_file and run_btn:
             type="primary"
         )
         
-        # 强制垃圾回收，保障云端不爆内存
+        # 🛡️ 内存护盾 5：强制垃圾回收大杀器
         del rate_raw, rate_norm
         gc.collect()
 
