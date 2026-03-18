@@ -271,4 +271,341 @@ def save_kinetic_graphs_to_zip(df, zipf, base_dir, suffix, ranges, phase_order, 
 
     metric_upper = metric_col.upper()
     ax.set_title(f"Kinetic {metric_upper} Profile", fontsize=14, fontweight='bold', pad=15)
-    ax.set_xlabel("Measurement", fontsize=12
+    ax.set_xlabel("Measurement", fontsize=12)
+    ylabel_unit = "(pmol/min)" if metric_col == "ocr" else "(mpH/min)"
+    ax.set_ylabel(f"{metric_upper} {ylabel_unit}" if suffix == "raw" else f"{metric_upper} {ylabel_unit}/Norm. Unit")
+    
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.set_ylim(bottom=min(0, ymin), top=ymax * 1.1)
+    
+    fig.tight_layout()
+    img_bytes = io.BytesIO()
+    fig.savefig(img_bytes, format='png', dpi=300, bbox_inches="tight")
+    zipf.writestr(f"{base_dir}/Kinetic_{metric_upper}_{suffix}.png", img_bytes.getvalue())
+    plt.close(fig)
+    plt.close('all')
+
+
+# =====================================================
+# Interactive Plotly Generation (Frontend)
+# =====================================================
+def create_plotly_kinetic(df, suffix, ranges, phase_order, metric_col="ocr"):
+    if metric_col not in df.columns: return None
+    g = df.groupby(["group", "measurement"], observed=True)[metric_col]
+    m, s = g.mean().unstack(level=0), g.sem().unstack(level=0)
+    if m.empty: return None
+
+    fig = go.Figure()
+    for col in m.columns:
+        fig.add_trace(go.Scatter(
+            x=m.index, y=m[col],
+            error_y=dict(type='data', array=s[col], visible=True),
+            mode='lines+markers', name=col,
+            line=dict(width=2), marker=dict(size=6),
+            hovertemplate="Mea %{x}<br>Mean: %{y:.2f}<br>SEM: %{error_y.array:.2f}<extra></extra>"
+        ))
+    
+    for i in range(1, len(phase_order)):
+        phase = phase_order[i]
+        if phase in ranges and len(ranges[phase]) > 0:
+            line_x = ranges[phase][0] - 0.5
+            fig.add_vline(x=line_x, line_dash="dash", line_color="gray", opacity=0.7)
+            fig.add_annotation(x=line_x, y=1.05, yref="paper", text=f"<b>{phase}</b>", showarrow=False, 
+                               bgcolor="white", bordercolor="gray", borderwidth=1)
+    
+    metric_upper = metric_col.upper()
+    ylabel = f"{metric_upper} " + ("(pmol/min)" if metric_col == "ocr" else "(mpH/min)")
+    if suffix == "norm": ylabel += "/Norm. Unit"
+    
+    fig.update_layout(
+        title=f"<b>Interactive Kinetic {metric_upper}</b>",
+        xaxis_title="Measurement", yaxis_title=ylabel,
+        hovermode="x unified", template="plotly_white",
+        height=600, 
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+        xaxis=dict(automargin=True)
+    )
+    return fig
+
+def create_plotly_bar(df, metric, suffix, control):
+    g = df.groupby("group", observed=True)[metric]
+    m, s = g.mean(), g.std()
+    
+    fig = go.Figure()
+    x_positions = list(range(len(m.index)))
+    
+    fig.add_trace(go.Bar(
+        name='Mean', x=x_positions, y=m.values,
+        error_y=dict(type='data', array=s.values),
+        marker_color="#4A90E2", opacity=0.7, showlegend=False
+    ))
+    
+    if control in m.index:
+        ctrl_vals = df[df["group"] == control][metric].dropna()
+    else:
+        ctrl_vals = []
+        
+    global_ymax = (m+s).max() if not (m.isna().all() or s.isna().all()) else df[metric].max()
+    
+    for i, grp in enumerate(m.index):
+        y_vals = df[df["group"] == grp][metric].dropna()
+        if len(y_vals) > 0:
+            x_vals = np.random.normal(i, 0.05, size=len(y_vals))
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=y_vals, mode='markers',
+                marker=dict(color='black', size=5, opacity=0.6),
+                name=grp, hoverinfo='y+name', showlegend=False
+            ))
+        
+        if grp != control and len(ctrl_vals) >= 2 and len(y_vals) >= 2:
+            _, p = ttest_ind(ctrl_vals, y_vals, equal_var=False)
+            stars = "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+            p_str = "p<0.0001" if p < 0.0001 else f"p={round(p,4)}"
+            grp_max = max(m[grp] + s[grp], y_vals.max())
+            
+            fig.add_annotation(
+                x=i, y=grp_max + global_ymax * 0.05,
+                text=f"<b>{stars}</b><br>{p_str}", showarrow=False,
+                font=dict(size=11)
+            )
+            
+    ylabel = "Cell Count" if metric == "Cell Number" else "OCR (pmol/min)" if suffix=="raw" else "OCR (pmol/min/Norm. Unit)"
+    fig.update_layout(
+        title=f"<b>{metric}</b>", yaxis_title=ylabel,
+        template="plotly_white", 
+        height=550, 
+        xaxis=dict(
+            tickmode='array',
+            tickvals=x_positions,
+            ticktext=m.index,
+            tickangle=-45,
+            automargin=True
+        ),
+        margin=dict(b=120)
+    )
+    return fig
+
+def create_plotly_plate_qc(unselected):
+    z = np.zeros((8, 12))
+    for r in range(8):
+        for c in range(12):
+            if f"{chr(ord('A')+r)}{c+1:02d}" in unselected:
+                z[r, c] = 1
+    fig = go.Figure(data=go.Heatmap(
+        z=z[::-1], x=list(range(1, 13)), y=list("ABCDEFGH")[::-1],
+        colorscale=[[0, "#E8F0FE"], [1, "#5F6368"]], showscale=False, xgap=2, ygap=2,
+        hovertemplate="Well: %{y}%{x:02d}<extra></extra>"
+    ))
+    fig.update_layout(title="<b>Plate QC (Grey = Excluded)</b>", height=350, template="plotly_white",
+                      xaxis=dict(side="top")) 
+    return fig
+
+# =====================================================
+# Extractor Engine (Cached)
+# =====================================================
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=3600)
+def extract_all_data(file_bytes):
+    file_io = io.BytesIO(file_bytes)
+    selected, unselected = detect_wells_by_fg_theme(file_io)
+    file_io.seek(0)
+    
+    try:
+        xls = pd.ExcelFile(file_io, engine='calamine')
+    except Exception:
+        file_io.seek(0)
+        xls = pd.ExcelFile(file_io)
+        
+    phases = parse_phases_from_wave(xls)
+    cell_counts = parse_cell_counts(xls)
+    
+    rate_raw = None
+    if any("rate" == str(s).lower() for s in xls.sheet_names):
+        actual_sheet = next(s for s in xls.sheet_names if str(s).lower() == "rate")
+        rate_raw = load_rate_sheet(xls, actual_sheet, selected)
+            
+    rate_norm = None
+    if any("normalized rate" == str(s).lower() for s in xls.sheet_names):
+        actual_sheet = next(s for s in xls.sheet_names if str(s).lower() == "normalized rate")
+        rate_norm = load_rate_sheet(xls, actual_sheet, selected)
+            
+    return unselected, phases, cell_counts, rate_raw, rate_norm
+
+def apply_custom_order(df, order):
+    if df is None or df.empty: return df
+    df = df[df["group"].isin(order)].copy()
+    df["group"] = pd.Categorical(df["group"], categories=order, ordered=True)
+    return df
+
+# =====================================================
+# Streamlit Web App UI
+# =====================================================
+st.set_page_config(page_title="Seahorse Web Tool", layout="wide", page_icon="🧬", initial_sidebar_state="expanded")
+
+st.title("🧬 Seahorse Analysis Web Tool (Ultimate Edition)")
+st.markdown("Powered by **Calamine** engine & **Plotly** Interactive Graphics.")
+
+with st.sidebar:
+    st.header("1. Upload Data")
+    uploaded_file = st.file_uploader("Upload Wave Excel (.xlsx)", type=["xlsx"])
+    
+    if uploaded_file:
+        file_bytes = uploaded_file.getvalue()
+        
+        with st.spinner("⚡ Extracting Data (Superfast Mode)..."):
+            unselected, phases, cell_counts, rate_raw, rate_norm = extract_all_data(file_bytes)
+            del file_bytes
+            gc.collect()
+            
+        phase_order = [p["name"] for p in phases]
+        defaults = {p["name"]: p["cycles"] for p in phases}
+        
+        st.header("2. Assay Settings")
+        st.markdown("Cycles per Phase:")
+        cycle_vars = {}
+        cols = st.columns(2)
+        for i, phase in enumerate(phase_order):
+            with cols[i % 2]:
+                cycle_vars[phase] = st.number_input(f"{phase}", min_value=1, max_value=20, value=defaults.get(phase, 3))
+        
+        st.markdown("---")
+        
+        st.header("3. X-Axis Layout & Control")
+        original_groups = []
+        if rate_raw is not None:
+            for g in rate_raw["group"].dropna():
+                if g not in original_groups and g.lower() not in ["background", "unassigned"]:
+                    original_groups.append(g)
+        
+        # 🖱️ 交互优化：直接上下拖拽卡片来重排，爽感爆棚
+        st.markdown("💡 **Drag and drop the cards below to reorder your X-Axis:**")
+        final_group_order = sort_items(original_groups)
+        
+        st.markdown("---")
+        control_group = st.selectbox("Select Control Group (for P-values):", final_group_order) if final_group_order else ""
+
+        run_btn = st.button("🚀 Run Analysis", type="primary", use_container_width=True)
+
+if uploaded_file and run_btn:
+    if not final_group_order:
+        st.error("Please ensure you have groups to plot.")
+        st.stop()
+
+    with st.spinner("Processing in Memory (Zero-Disk I/O)..."):
+        # ⚡ 极速起飞：我们在内存里凭空造一个 ZIP 文件，不碰物理硬盘
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            
+            # 写入 Info 文本
+            info_str = "Seahorse Analysis Summary\n=========================\n\nExcluded Wells:\n"
+            if unselected:
+                for w in sorted(list(unselected), key=lambda x: (x[0], int(x[1:]))): info_str += f" - {w}\n"
+            else:
+                info_str += " - None\n"
+            info_str += "\n* Cell Count analysis bypasses the 'Unselected Well' filter.\n"
+            zipf.writestr("analysis_info.txt", info_str.encode('utf-8'))
+            
+            save_plate_qc_to_zip(unselected, zipf)
+            
+            if rate_raw is not None:
+                rate_raw = apply_custom_order(rate_raw, final_group_order)
+            if rate_norm is not None:
+                rate_norm = apply_custom_order(rate_norm, final_group_order)
+                
+            cell_df = None
+            if cell_counts and rate_raw is not None:
+                cell_df = rate_raw[['group', 'well']].drop_duplicates()
+                cell_df["Cell Number"] = cell_df["well"].map(cell_counts)
+                cell_df = cell_df.dropna(subset=["Cell Number"])
+            
+            ranges = derive_ranges_from_cycles(cycle_vars, phase_order)
+            
+            # --- RAW DATA ---
+            if rate_raw is not None:
+                res_raw = compute_metrics(rate_raw, ranges)
+                if cell_df is not None and not cell_df.empty:
+                    res_raw = pd.merge(res_raw, cell_df, on=["group", "well"], how="outer")
+                    
+                res_raw = apply_custom_order(res_raw, final_group_order)
+                res_raw = res_raw.sort_values(["group", "well"])
+                
+                # Backend Save -> RAM ZIP
+                save_results_to_zip(res_raw, zipf, "raw", "raw", control_group)
+                save_kinetic_graphs_to_zip(rate_raw, zipf, "raw", "raw", ranges, phase_order, "ocr")
+                save_kinetic_graphs_to_zip(rate_raw, zipf, "raw", "raw", ranges, phase_order, "ecar")
+                
+                # Frontend Render
+                st.markdown("### 🔹 Raw Data Results")
+                tab_k_raw, tab_b_raw = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
+                
+                with tab_k_raw:
+                    fig_k_ocr = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ocr")
+                    if fig_k_ocr: st.plotly_chart(fig_k_ocr, use_container_width=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    fig_k_ecar = create_plotly_kinetic(rate_raw, "raw", ranges, phase_order, "ecar")
+                    if fig_k_ecar: st.plotly_chart(fig_k_ecar, use_container_width=True)
+                        
+                with tab_b_raw:
+                    metrics = [c for c in res_raw.columns if c not in ["group", "well"]]
+                    cols = st.columns(2) 
+                    for i, m in enumerate(metrics):
+                        fig_bar = create_plotly_bar(res_raw, m, "raw", control_group)
+                        with cols[i % 2]:
+                            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # --- NORMALIZED DATA ---
+            if rate_norm is not None:
+                st.divider()
+                res_norm = compute_metrics(rate_norm, ranges)
+                if cell_df is not None and not cell_df.empty:
+                    res_norm = pd.merge(res_norm, cell_df, on=["group", "well"], how="outer")
+                
+                res_norm = apply_custom_order(res_norm, final_group_order)
+                res_norm = res_norm.sort_values(["group", "well"])
+                
+                # Backend Save -> RAM ZIP
+                save_results_to_zip(res_norm, zipf, "normalized", "norm", control_group)
+                save_kinetic_graphs_to_zip(rate_norm, zipf, "normalized", "norm", ranges, phase_order, "ocr")
+                save_kinetic_graphs_to_zip(rate_norm, zipf, "normalized", "norm", ranges, phase_order, "ecar")
+
+                # Frontend Render
+                st.markdown("### 🔹 Normalized Data Results")
+                tab_k_norm, tab_b_norm = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
+                
+                with tab_k_norm:
+                    fig_k_ocr_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ocr")
+                    if fig_k_ocr_n: st.plotly_chart(fig_k_ocr_n, use_container_width=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    fig_k_ecar_n = create_plotly_kinetic(rate_norm, "norm", ranges, phase_order, "ecar")
+                    if fig_k_ecar_n: st.plotly_chart(fig_k_ecar_n, use_container_width=True)
+                        
+                with tab_b_norm:
+                    metrics = [c for c in res_norm.columns if c not in ["group", "well"]]
+                    cols = st.columns(2)
+                    for i, m in enumerate(metrics):
+                        fig_bar_n = create_plotly_bar(res_norm, m, "norm", control_group)
+                        with cols[i % 2]:
+                            st.plotly_chart(fig_bar_n, use_container_width=True)
+
+            st.divider()
+            st.markdown("### 🧫 Plate QC")
+            st.plotly_chart(create_plotly_plate_qc(unselected), use_container_width=False)
+
+        st.success("✅ Analysis Complete! Layout and Zipping finished in Memory.")
+
+        # Download Button
+        st.sidebar.markdown("---")
+        st.sidebar.download_button(
+            label="📦 Download HD Matplotlib ZIP",
+            data=zip_buffer.getvalue(),
+            file_name=f"Seahorse_Results_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+            mime="application/zip",
+            type="primary"
+        )
+        
+        # 强制垃圾回收大杀器
+        del rate_raw, rate_norm, zip_buffer
+        gc.collect()
+
+elif not uploaded_file:
+    st.info("👈 Please upload your Seahorse Wave Excel file in the sidebar to begin.")
