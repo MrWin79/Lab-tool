@@ -8,13 +8,13 @@ import gc
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg') # 🛡️ 内存护盾：强制 Matplotlib 纯后台无头模式运行，防崩溃
+matplotlib.use('Agg') # 🛡️ 内存护盾：强制后台无头模式
 import matplotlib.pyplot as plt
 from scipy.stats import ttest_ind
 from openpyxl import load_workbook
 import streamlit as st
 import plotly.graph_objects as go
-from streamlit_sortables import sort_items # 🖱️ 引入拖拽神级组件
+from streamlit_sortables import sort_items 
 
 # =====================================================
 # Core Logic (Math)
@@ -119,10 +119,10 @@ def detect_wells_by_fg_theme(file_obj):
                 selected.add(well)
     return selected, unselected
 
-def load_rate_sheet(xls, sheet_name, selected_wells):
+# 【核心修改 1】：读取表时，不再提前过滤 selected_wells，保留所有孔的数据供 Cell Count 使用
+def load_rate_sheet(xls, sheet_name):
     df = pd.read_excel(xls, sheet_name=sheet_name)
     df.columns = df.columns.str.lower()
-    df = df[df["well"].isin(selected_wells)]
     df = df[~df["group"].isin(["Background", "Unassigned", "background", "unassigned"])]
     return df
 
@@ -198,7 +198,6 @@ def export_prism_csvs_to_zip(summary_df, zipf, base_dir, suffix):
         wide = tmp.pivot(index="_rep", columns="group", values=metric).sort_index()
         wide = wide.rename_axis(None, axis=0).rename_axis(None, axis=1)
         csv_str = wide.to_csv(index=False)
-        # 写入带有BOM的UTF8，防止Excel乱码
         zipf.writestr(f"{base_dir}/prism_csv/Prism_{_sanitize_filename(metric)}_{suffix}.csv", csv_str.encode("utf-8-sig"))
 
 def save_results_to_zip(df, zipf, base_dir, suffix, control):
@@ -419,17 +418,18 @@ def extract_all_data(file_bytes):
     phases = parse_phases_from_wave(xls)
     cell_counts = parse_cell_counts(xls)
     
-    rate_raw = None
+    # 【核心修改 2】：提取未被过滤的完整全量数据
+    rate_raw_full = None
     if any("rate" == str(s).lower() for s in xls.sheet_names):
         actual_sheet = next(s for s in xls.sheet_names if str(s).lower() == "rate")
-        rate_raw = load_rate_sheet(xls, actual_sheet, selected)
+        rate_raw_full = load_rate_sheet(xls, actual_sheet)
             
-    rate_norm = None
+    rate_norm_full = None
     if any("normalized rate" == str(s).lower() for s in xls.sheet_names):
         actual_sheet = next(s for s in xls.sheet_names if str(s).lower() == "normalized rate")
-        rate_norm = load_rate_sheet(xls, actual_sheet, selected)
+        rate_norm_full = load_rate_sheet(xls, actual_sheet)
             
-    return unselected, phases, cell_counts, rate_raw, rate_norm
+    return selected, unselected, phases, cell_counts, rate_raw_full, rate_norm_full
 
 def apply_custom_order(df, order):
     if df is None or df.empty: return df
@@ -453,7 +453,8 @@ with st.sidebar:
         file_bytes = uploaded_file.getvalue()
         
         with st.spinner("⚡ Extracting Data (Superfast Mode)..."):
-            unselected, phases, cell_counts, rate_raw, rate_norm = extract_all_data(file_bytes)
+            # 接收完整分流数据
+            selected, unselected, phases, cell_counts, rate_raw_full, rate_norm_full = extract_all_data(file_bytes)
             del file_bytes
             gc.collect()
             
@@ -472,12 +473,11 @@ with st.sidebar:
         
         st.header("3. X-Axis Layout & Control")
         original_groups = []
-        if rate_raw is not None:
-            for g in rate_raw["group"].dropna():
+        if rate_raw_full is not None:
+            for g in rate_raw_full["group"].dropna():
                 if g not in original_groups and g.lower() not in ["background", "unassigned"]:
                     original_groups.append(g)
         
-        # 🖱️ 交互优化：直接上下拖拽卡片来重排，爽感爆棚
         st.markdown("💡 **Drag and drop the cards below to reorder your X-Axis:**")
         final_group_order = sort_items(original_groups)
         
@@ -492,11 +492,9 @@ if uploaded_file and run_btn:
         st.stop()
 
     with st.spinner("Processing in Memory (Zero-Disk I/O)..."):
-        # ⚡ 极速起飞：我们在内存里凭空造一个 ZIP 文件，不碰物理硬盘
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             
-            # 📝 写入带有严谨学术说明的 Info 文本
             info_str = "Seahorse Analysis Summary\n=========================\n\nExcluded Wells:\n"
             if unselected:
                 for w in sorted(list(unselected), key=lambda x: (x[0], int(x[1:]))): info_str += f" - {w}\n"
@@ -524,16 +522,21 @@ if uploaded_file and run_btn:
             
             save_plate_qc_to_zip(unselected, zipf)
             
-            if rate_raw is not None:
-                rate_raw = apply_custom_order(rate_raw, final_group_order)
-            if rate_norm is not None:
-                rate_norm = apply_custom_order(rate_norm, final_group_order)
+            if rate_raw_full is not None:
+                rate_raw_full = apply_custom_order(rate_raw_full, final_group_order)
+            if rate_norm_full is not None:
+                rate_norm_full = apply_custom_order(rate_norm_full, final_group_order)
                 
+            # 【核心修改 3】：从“未过滤的全部孔”中提取所有的 Cell Number
             cell_df = None
-            if cell_counts and rate_raw is not None:
-                cell_df = rate_raw[['group', 'well']].drop_duplicates()
+            if cell_counts and rate_raw_full is not None:
+                cell_df = rate_raw_full[['group', 'well']].drop_duplicates()
                 cell_df["Cell Number"] = cell_df["well"].map(cell_counts)
                 cell_df = cell_df.dropna(subset=["Cell Number"])
+            
+            # 【核心修改 4】：在进行 OCR/ECAR 指标计算前，精准过滤掉被排除的 Selected 孔
+            rate_raw = rate_raw_full[rate_raw_full["well"].isin(selected)] if rate_raw_full is not None else None
+            rate_norm = rate_norm_full[rate_norm_full["well"].isin(selected)] if rate_norm_full is not None else None
             
             ranges = derive_ranges_from_cycles(cycle_vars, phase_order)
             
@@ -541,17 +544,16 @@ if uploaded_file and run_btn:
             if rate_raw is not None:
                 res_raw = compute_metrics(rate_raw, ranges)
                 if cell_df is not None and not cell_df.empty:
+                    # 靠 Outer Merge 把全量孔的 Cell Number 无缝拼接到分析结果中
                     res_raw = pd.merge(res_raw, cell_df, on=["group", "well"], how="outer")
                     
                 res_raw = apply_custom_order(res_raw, final_group_order)
                 res_raw = res_raw.sort_values(["group", "well"])
                 
-                # Backend Save -> RAM ZIP
                 save_results_to_zip(res_raw, zipf, "raw", "raw", control_group)
                 save_kinetic_graphs_to_zip(rate_raw, zipf, "raw", "raw", ranges, phase_order, "ocr")
                 save_kinetic_graphs_to_zip(rate_raw, zipf, "raw", "raw", ranges, phase_order, "ecar")
                 
-                # Frontend Render
                 st.markdown("### 🔹 Raw Data Results")
                 tab_k_raw, tab_b_raw = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
                 
@@ -580,12 +582,10 @@ if uploaded_file and run_btn:
                 res_norm = apply_custom_order(res_norm, final_group_order)
                 res_norm = res_norm.sort_values(["group", "well"])
                 
-                # Backend Save -> RAM ZIP
                 save_results_to_zip(res_norm, zipf, "normalized", "norm", control_group)
                 save_kinetic_graphs_to_zip(rate_norm, zipf, "normalized", "norm", ranges, phase_order, "ocr")
                 save_kinetic_graphs_to_zip(rate_norm, zipf, "normalized", "norm", ranges, phase_order, "ecar")
 
-                # Frontend Render
                 st.markdown("### 🔹 Normalized Data Results")
                 tab_k_norm, tab_b_norm = st.tabs(["📉 Kinetic Curves", "📊 Bar Charts"])
                 
@@ -610,7 +610,6 @@ if uploaded_file and run_btn:
 
         st.success("✅ Analysis Complete! Layout and Zipping finished in Memory.")
 
-        # Download Button
         st.sidebar.markdown("---")
         st.sidebar.download_button(
             label="📦 Download HD Matplotlib ZIP",
@@ -620,8 +619,8 @@ if uploaded_file and run_btn:
             type="primary"
         )
         
-        # 强制垃圾回收大杀器
-        del rate_raw, rate_norm, zip_buffer
+        # 🛡️ 内存护盾 5：加入全量数据变量的垃圾回收
+        del rate_raw_full, rate_norm_full, rate_raw, rate_norm, zip_buffer
         gc.collect()
 
 elif not uploaded_file:
