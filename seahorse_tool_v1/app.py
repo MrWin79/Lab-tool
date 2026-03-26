@@ -496,13 +496,30 @@ if uploaded_file and run_btn:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             
-            # 写入 Info 文本
+            # 📝 写入带有严谨学术说明的 Info 文本
             info_str = "Seahorse Analysis Summary\n=========================\n\nExcluded Wells:\n"
             if unselected:
                 for w in sorted(list(unselected), key=lambda x: (x[0], int(x[1:]))): info_str += f" - {w}\n"
             else:
                 info_str += " - None\n"
-            info_str += "\n* Cell Count analysis bypasses the 'Unselected Well' filter.\n"
+            info_str += "\n* Cell Count analysis bypasses the 'Unselected Well' filter.\n\n"
+            
+            info_str += "Data Extraction & Calculation Logic\n"
+            info_str += "-----------------------------------\n"
+            info_str += "[Value Extraction Parameters]\n"
+            info_str += "- Baseline: Mean OCR of the LAST measurement in the Baseline phase.\n"
+            info_str += "- Oligo: Minimum OCR during the Oligomycin phase.\n"
+            info_str += "- FCCP: Maximum OCR during the FCCP phase.\n"
+            info_str += "- Rot: Minimum OCR during the Rotenone/Antimycin A phase.\n"
+            info_str += "- Etomoxir: Minimum OCR during the Etomoxir phase.\n\n"
+            
+            info_str += "[Metric Formulas]\n"
+            info_str += "- ATP-linked Respiration = Baseline - Oligo\n"
+            info_str += "- Basal Respiration      = Baseline - Rot\n"
+            info_str += "- Proton Leak            = Oligo - Rot\n"
+            info_str += "- Max Respiration        = FCCP - Rot\n"
+            info_str += "- Fatty Acid Oxidation   = Baseline - Etomoxir\n"
+            
             zipf.writestr("analysis_info.txt", info_str.encode('utf-8'))
             
             save_plate_qc_to_zip(unselected, zipf)
