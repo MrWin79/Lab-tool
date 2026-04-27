@@ -45,7 +45,8 @@ def apply_color(val, gene_names, ctrl_names):
 
 def to_excel(df):
     output = io.BytesIO()
-    clean_df = df.applymap(lambda x: str(x).replace(" ⚠️", "") if isinstance(x, str) else x)
+    # 将 applymap 修改为 map (Pandas 2.1+ 的标准写法)
+    clean_df = df.map(lambda x: str(x).replace(" ⚠️", "") if isinstance(x, str) else x)
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         clean_df.to_excel(writer, index=True, sheet_name='PlateMap')
     return output.getvalue()
