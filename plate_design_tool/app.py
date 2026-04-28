@@ -9,7 +9,7 @@ from collections import defaultdict
 # ==========================================
 # 🎨 页面配置与 UI 样式
 # ==========================================
-st.set_page_config(page_title="TDIMP Plate Designer | 双引擎微孔板阵列系统", layout="wide", page_icon="🧪")
+st.set_page_config(page_title="TDIMP Plate Designer | 核心优先权架构", layout="wide", page_icon="🧪")
 
 COLORS = [
     "#FFB3BA", "#FFDFBA", "#FFFFBA", "#BAFFC9", "#BAE1FF", 
@@ -51,25 +51,14 @@ def get_quadrant(r_idx, c_idx, total_rows, total_cols):
     if is_bottom and not is_right: return 3
     return 4
 
-def get_sq_dist(r1, c1, r2, c2):
-    return (ord(r1) - ord(r2))**2 + (int(c1) - int(c2))**2
-
-def is_quad_valid(quad, q_counts, req_reps):
-    if req_reps == 0: return False
-    max_per_quad = math.ceil(req_reps / 4.0)
-    num_max_quads = req_reps % 4 if req_reps % 4 != 0 else 4
-    proposed_count = q_counts.get(quad, 0) + 1
-    if proposed_count > max_per_quad: return False
-    if proposed_count == max_per_quad:
-        if sum(1 for v in q_counts.values() if v == max_per_quad) >= num_max_quads:
-            return False
-    return True
-
 # ==========================================
-# 🧠 引擎 1：Monte Carlo (硬约束/一票否决)
+# 🧠 引擎 1：极速蒙特卡洛 (Monte Carlo) 
 # ==========================================
-def run_monte_carlo(genes_dict, ctrls_dict, all_rows, all_cols, available_wells, seed):
+# 注：MC 引擎本身就是分步排布的，先排 Gene 再排 Control，
+# 所以物理机制上天然就是 Gene 优先占据最好位置。
+def run_monte_carlo(genes_dict, ctrls_dict, all_rows, all_cols, available_wells, well_meta, seed):
     random.seed(seed)
+    
     layout_result = {}
     gene_placed_coords = defaultdict(list)
     ctrl_placed_coords = defaultdict(list)
@@ -95,83 +84,115 @@ def run_monte_carlo(genes_dict, ctrls_dict, all_rows, all_cols, available_wells,
         
         gene_placed_rows = defaultdict(set)
         gene_placed_cols = defaultdict(set)
-        gene_placed_coords.clear()
-        ctrl_placed_coords.clear()
-        gene_placed_quads = defaultdict(lambda: defaultdict(int))
-        ctrl_placed_quads = defaultdict(lambda: defaultdict(int))
+        gene_placed_int = defaultdict(list)
+        ctrl_placed_int = defaultdict(list)
+        gene_placed_quads = defaultdict(lambda: {1:0, 2:0, 3:0, 4:0})
+        ctrl_placed_quads = defaultdict(lambda: {1:0, 2:0, 3:0, 4:0})
         
         try:
+            # 优先计算靶点
             for g_name in gene_keys:
                 req_reps = int(genes_dict[g_name])
+                g_rows, g_cols = gene_placed_rows[g_name], gene_placed_cols[g_name]
+                g_quads = gene_placed_quads[g_name]
+                g_ints = gene_placed_int[g_name]
+                
+                max_per_quad = math.ceil(req_reps / 4.0) if req_reps > 0 else 0
+                num_max_quads = req_reps % 4 if req_reps % 4 != 0 else 4
+                
                 for _ in range(req_reps):
+                    best_cands = []
+                    max_d = -1
                     cands = []
-                    for (r, c) in available:
-                        if r not in gene_placed_rows[g_name] and c not in gene_placed_cols[g_name]:
-                            if require_gene_no_corner:
-                                if any(get_sq_dist(r, c, pr, pc) <= 2 for pr, pc in gene_placed_coords[g_name]):
-                                    continue
-                            quad = get_quadrant(all_rows.index(r), all_cols.index(c), len(all_rows), len(all_cols))
-                            if is_quad_valid(quad, gene_placed_quads[g_name], req_reps):
-                                d_sq = float('inf')
-                                if gene_placed_coords[g_name]:
-                                    d_sq = min(get_sq_dist(r, c, pr, pc) for pr, pc in gene_placed_coords[g_name])
-                                cands.append((r, c, d_sq, quad))
                     
-                    if not cands: raise ValueError("Gene Blocked")
+                    for (r, c) in available:
+                        if r in g_rows or c in g_cols: continue
+                        r_i, c_i, quad = well_meta[(r, c)]
+                        
+                        if require_gene_no_corner:
+                            conflict = False
+                            for pr_i, pc_i in g_ints:
+                                if (r_i - pr_i)**2 + (c_i - pc_i)**2 <= 2:
+                                    conflict = True; break
+                            if conflict: continue
+                        
+                        proposed_count = g_quads[quad] + 1
+                        if proposed_count > max_per_quad: continue
+                        if proposed_count == max_per_quad:
+                            if sum(1 for v in g_quads.values() if v == max_per_quad) >= num_max_quads: continue
+                        
+                        d_sq = float('inf')
+                        if g_ints: d_sq = min((r_i - pr_i)**2 + (c_i - pc_i)**2 for pr_i, pc_i in g_ints)
+                        
+                        if is_distance_greedy:
+                            if d_sq > max_d: max_d = d_sq; best_cands = [(r, c, quad, r_i, c_i)]
+                            elif d_sq == max_d: best_cands.append((r, c, quad, r_i, c_i))
+                        else: cands.append((r, c, quad, r_i, c_i))
                     
                     if is_distance_greedy:
-                        max_d = max(cand[2] for cand in cands)
-                        best = [cand for cand in cands if cand[2] == max_d]
-                        chosen = random.choice(best)
+                        if not best_cands: raise ValueError("Blocked")
+                        chosen = random.choice(best_cands)
                     else:
+                        if not cands: raise ValueError("Blocked")
                         chosen = random.choice(cands)
                         
-                    r, c, _, quad = chosen
+                    r, c, quad, r_i, c_i = chosen
                     available.remove((r, c))
                     layout_result[(r, c)] = g_name
-                    gene_placed_rows[g_name].add(r)
-                    gene_placed_cols[g_name].add(c)
+                    g_rows.add(r); g_cols.add(c); g_quads[quad] += 1
+                    g_ints.append((r_i, c_i))
                     gene_placed_coords[g_name].append((r, c))
-                    gene_placed_quads[g_name][quad] += 1
             
+            # 后续计算对照组
             for ctrl_name, req_reps in ctrls_dict.items():
                 req_reps = int(req_reps)
+                c_quads = ctrl_placed_quads[ctrl_name]
+                c_ints = ctrl_placed_int[ctrl_name]
+                max_per_quad = math.ceil(req_reps / 4.0) if req_reps > 0 else 0
+                num_max_quads = req_reps % 4 if req_reps % 4 != 0 else 4
+                
                 for _ in range(req_reps):
-                    cands = []
+                    best_cands, max_d, cands = [], -1, []
                     for (r, c) in available:
-                        quad = get_quadrant(all_rows.index(r), all_cols.index(c), len(all_rows), len(all_cols))
-                        if require_ctrl_quad and not is_quad_valid(quad, ctrl_placed_quads[ctrl_name], req_reps): continue
+                        r_i, c_i, quad = well_meta[(r, c)]
+                        if require_ctrl_quad:
+                            proposed_count = c_quads[quad] + 1
+                            if proposed_count > max_per_quad: continue
+                            if proposed_count == max_per_quad:
+                                if sum(1 for v in c_quads.values() if v == max_per_quad) >= num_max_quads: continue
                         
                         d_sq_same = float('inf')
-                        if ctrl_placed_coords[ctrl_name]:
-                            d_sq_same = min(get_sq_dist(r, c, pr, pc) for pr, pc in ctrl_placed_coords[ctrl_name])
+                        if c_ints: d_sq_same = min((r_i - pr_i)**2 + (c_i - pc_i)**2 for pr_i, pc_i in c_ints)
                         
                         if require_ctrl_no_corner and d_sq_same <= 2: continue
                         if require_ctrl_no_edge and d_sq_same <= 1: continue
                             
-                        cands.append((r, c, d_sq_same, quad)) 
-                    
-                    if not cands: raise ValueError("Ctrl Blocked")
+                        if is_distance_greedy:
+                            if d_sq_same > max_d: max_d = d_sq_same; best_cands = [(r, c, quad, r_i, c_i)]
+                            elif d_sq_same == max_d: best_cands.append((r, c, quad, r_i, c_i))
+                        else: cands.append((r, c, quad, r_i, c_i))
                     
                     if is_distance_greedy:
-                        max_d = max(cand[2] for cand in cands)
-                        best = [cand for cand in cands if cand[2] == max_d]
-                        chosen = random.choice(best)
+                        if not best_cands: raise ValueError("Blocked")
+                        chosen = random.choice(best_cands)
                     else:
+                        if not cands: raise ValueError("Blocked")
                         chosen = random.choice(cands)
                     
-                    r, c, _, quad = chosen
+                    r, c, quad, r_i, c_i = chosen
                     available.remove((r, c))
                     layout_result[(r, c)] = ctrl_name
+                    c_quads[quad] += 1; c_ints.append((r_i, c_i))
                     ctrl_placed_coords[ctrl_name].append((r, c))
-                    ctrl_placed_quads[ctrl_name][quad] += 1
             
             success = True
             strat_list = []
             if is_distance_greedy: strat_list.append("最大空间拉扯")
             if require_gene_no_corner: strat_list.append("靶点不共角")
+            else: strat_list.append("靶点降级(共角)")
             if require_ctrl_no_corner: strat_list.append("对照不共角")
             elif require_ctrl_no_edge: strat_list.append("对照不共边")
+            else: strat_list.append("对照降级(紧凑)")
             strategy = " | ".join(strat_list)
             break
         except ValueError:
@@ -181,11 +202,19 @@ def run_monte_carlo(genes_dict, ctrls_dict, all_rows, all_cols, available_wells,
     return success, layout_result, gene_placed_coords, ctrl_placed_coords, attempt, elapsed, strategy
 
 # ==========================================
-# 🧠 引擎 2：Simulated Annealing (高压能量妥协)
+# 🧠 引擎 2：极速靶向退火 (靶点绝对优先分层逻辑)
 # ==========================================
-def calculate_energy(state_dict, all_rows, all_cols):
+def calculate_energy_fast(state_dict, well_meta):
+    """
+    🎯 核心算法升级：靶点（Gene）优先压制体系
+    任何靶点的约束条件都会被赋予万级或千级的能量权重，
+    而对照组（Control）的能量权重被压缩在百级以内。
+    从而逼迫算法优先解决靶点冲突，对照组全面让步。
+    """
     energy = 0
+    conflicts = set()
     groups = defaultdict(list)
+    
     for (r, c), item in state_dict.items():
         groups[(item['type'], item['name'])].append((r, c))
         
@@ -193,34 +222,50 @@ def calculate_energy(state_dict, all_rows, all_cols):
         r_counts, c_counts = defaultdict(int), defaultdict(int)
         quad_counts = {1:0, 2:0, 3:0, 4:0}
         
-        for r, c in coords:
-            r_idx, c_idx = all_rows.index(r), all_cols.index(c)
-            q = get_quadrant(r_idx, c_idx, len(all_rows), len(all_cols))
-            r_counts[r] += 1
-            c_counts[c] += 1
+        meta_data = [well_meta[coord] for coord in coords]
+        
+        for r_i, c_i, q in meta_data:
+            r_counts[r_i] += 1
+            c_counts[c_i] += 1
             quad_counts[q] += 1
             
-        for r, count in r_counts.items():
-            if count > 1: energy += (count - 1) * 1000
-        for c, count in c_counts.items():
-            if count > 1: energy += (count - 1) * 1000
+        # 👑 第一梯队：靶点（Gene）绝对高压区
+        if itype == 'gene':
+            weight_row_col = 10000 # 优先避开同行同列
+            weight_dist = 5000     # 其次避开共边共角
+            weight_quad = 2000     # 最后保全象限平滑
+        # 🛡️ 第二梯队：对照组（Control）妥协让步区
+        else:
+            weight_row_col = 500   # 对照组的同行同列，甚至不如靶点的象限失衡严重
+            weight_dist = 100      
+            weight_quad = 20       # 最容易被牺牲的条件
+            
+        for r_i, count in r_counts.items():
+            if count > 1: 
+                energy += (count - 1) * weight_row_col
+                conflicts.update([coords[idx] for idx, meta in enumerate(meta_data) if meta[0] == r_i])
+                
+        for c_i, count in c_counts.items():
+            if count > 1: 
+                energy += (count - 1) * weight_row_col
+                conflicts.update([coords[idx] for idx, meta in enumerate(meta_data) if meta[1] == c_i])
                 
         q_vals = quad_counts.values()
         if max(q_vals) - min(q_vals) > 1:
-            energy += 100 if itype == 'gene' else 50
+            energy += weight_quad
             
-        for i in range(len(coords)):
-            r1, c1 = coords[i]
-            r1_i, c1_i = all_rows.index(r1), all_cols.index(c1)
-            for j in range(i+1, len(coords)):
-                r2, c2 = coords[j]
-                r2_i, c2_i = all_rows.index(r2), all_cols.index(c2)
+        n = len(meta_data)
+        for i in range(n):
+            r1_i, c1_i, _ = meta_data[i]
+            for j in range(i+1, n):
+                r2_i, c2_i, _ = meta_data[j]
                 if (r1_i - r2_i)**2 + (c1_i - c2_i)**2 <= 2: 
-                    energy += 200 
+                    energy += weight_dist
+                    conflicts.update([coords[i], coords[j]])
                     
-    return energy
+    return energy, conflicts
 
-def run_simulated_annealing(genes_dict, ctrls_dict, all_rows, all_cols, available_wells, seed=42):
+def run_simulated_annealing(genes_dict, ctrls_dict, all_rows, all_cols, available_wells, well_meta, seed=42):
     random.seed(seed)
     
     items_to_place = []
@@ -230,19 +275,30 @@ def run_simulated_annealing(genes_dict, ctrls_dict, all_rows, all_cols, availabl
     random.shuffle(available_wells)
     current_state = {available_wells[i]: items_to_place[i] for i in range(len(items_to_place))}
     
-    current_energy = calculate_energy(current_state, all_rows, all_cols)
+    current_energy, current_conflicts = calculate_energy_fast(current_state, well_meta)
     best_state = current_state.copy()
     best_energy = current_energy
     
     t_start = time.perf_counter()
-    T = 2000.0 
-    cooling_rate = 0.99
-    max_iter = 10000
+    
+    # 动态自适应初始温度，适配新的万级能量差
+    if len(available_wells) > 150: 
+        T = 20000.0; cooling_rate = 0.9995; max_iter = 50000      
+    else: 
+        T = 10000.0; cooling_rate = 0.995; max_iter = 15000
+        
+    stuck_counter = 0
     
     for i in range(max_iter):
         if best_energy == 0: break
             
-        well_1 = random.choice(list(current_state.keys()))
+        # 靶向启发式置换
+        if current_conflicts and random.random() < 0.8:
+            conflict_list = [w for w in current_conflicts if w in current_state]
+            well_1 = random.choice(conflict_list) if conflict_list else random.choice(list(current_state.keys()))
+        else:
+            well_1 = random.choice(list(current_state.keys()))
+            
         well_2 = random.choice(available_wells)
         
         new_state = current_state.copy()
@@ -251,19 +307,29 @@ def run_simulated_annealing(genes_dict, ctrls_dict, all_rows, all_cols, availabl
         else:
             new_state[well_2] = new_state.pop(well_1)
             
-        new_energy = calculate_energy(new_state, all_rows, all_cols)
+        new_energy, new_conflicts = calculate_energy_fast(new_state, well_meta)
         
         if new_energy < current_energy or random.random() < math.exp((current_energy - new_energy) / T):
             current_state = new_state
             current_energy = new_energy
+            current_conflicts = new_conflicts
             if current_energy < best_energy:
                 best_state = current_state.copy()
                 best_energy = current_energy
+                stuck_counter = 0
+            else:
+                stuck_counter += 1
+        else:
+            stuck_counter += 1
+            
         T *= cooling_rate
         
+        # 淬火重启，跳出局部最优陷阱
+        if stuck_counter > 2000 and T < 100:
+            T = 5000.0; stuck_counter = 0
+            
     elapsed = time.perf_counter() - t_start
     
-    # 格式化输出，对接统一验证器
     layout_result = {}
     gene_placed_coords = defaultdict(list)
     ctrl_placed_coords = defaultdict(list)
@@ -273,12 +339,12 @@ def run_simulated_annealing(genes_dict, ctrls_dict, all_rows, all_cols, availabl
         if item['type'] == 'gene': gene_placed_coords[item['name']].append((r, c))
         else: ctrl_placed_coords[item['name']].append((r, c))
         
-    return True, layout_result, gene_placed_coords, ctrl_placed_coords, i+1, elapsed, "退火全局降能收敛"
+    return True, layout_result, gene_placed_coords, ctrl_placed_coords, i+1, elapsed, "靶点核心退火 (Target-First SA)"
 
 # ==========================================
 # 🖥️ Streamlit 界面逻辑
 # ==========================================
-st.title("🧪 TDIMP 核心阵列系统 | 双引擎无缝切换")
+st.title("🧪 TDIMP 核心阵列系统 | 靶点绝对优先架构")
 
 if "plate_type" not in st.session_state: st.session_state.plate_type = "96孔板"
 if "seed_val" not in st.session_state: st.session_state.seed_val = 42
@@ -294,9 +360,9 @@ with st.sidebar:
     st.divider()
     st.header("⚙️ 核心驱动引擎")
     engine_choice = st.radio("选择运算底层:", [
-        "🎲 Monte Carlo (硬约束寻优 | 强推)",
-        "🔥 Simulated Annealing (弹性妥协 | 防卡死)"
-    ], captions=["严格一票否决制，适合 96 孔板或宽松空间。", "高压能量惩罚机制，适合 384 孔板极限满载。"])
+        "🎲 Monte Carlo (一票否决 | 纯净极高)",
+        "🔥 Simulated Annealing (靶点优先 | 专攻384极限)"
+    ], captions=["严格不妥协任何约束条件，优先填入靶点。", "拥有明确的 Gene > Control 分层妥协机制。"])
 
 is_96 = (st.session_state.plate_type == "96孔板")
 all_rows = [chr(65+i) for i in range(8 if is_96 else 16)]
@@ -377,28 +443,47 @@ with tab1:
     st.session_state.seed_val = manual_seed
     
     with c_btn1:
-        if st.button(f"🚀 启动 {'MC' if 'Monte Carlo' in engine_choice else 'SA'} 引擎", type="primary", use_container_width=True): run_algorithm = True
+        if st.button(f"🚀 启动 {'MC' if 'Monte Carlo' in engine_choice else 'SA'} 极速引擎", type="primary", use_container_width=True): run_algorithm = True
     with c_btn2:
         if st.button("🔄 一键重新演化", use_container_width=True):
             st.session_state.seed_val = random.randint(1, 99999)
             run_algorithm = True
 
     if run_algorithm:
-        genes_dict = {row["靶点名称 (Gene)"]: int(row["复孔数量"]) for _, row in edited_genes.iterrows() if pd.notna(row["靶点名称 (Gene)"])}
-        ctrls_dict = {row["对照名称 (Control)"]: int(row["复孔数量"]) for _, row in edited_ctrls.iterrows() if pd.notna(row["对照名称 (Control)"])}
+        genes_dict = {}
+        for _, row in edited_genes.iterrows():
+            g_name, rep = row["靶点名称 (Gene)"], row["复孔数量"]
+            if pd.notna(g_name) and pd.notna(rep) and str(rep).strip() != "":
+                try: genes_dict[g_name] = int(float(rep))
+                except ValueError: pass
+                
+        ctrls_dict = {}
+        for _, row in edited_ctrls.iterrows():
+            c_name, rep = row["对照名称 (Control)"], row["复孔数量"]
+            if pd.notna(c_name) and pd.notna(rep) and str(rep).strip() != "":
+                try: ctrls_dict[c_name] = int(float(rep))
+                except ValueError: pass
+                
         total_wells_req = sum(genes_dict.values()) + sum(ctrls_dict.values())
         
         if total_wells_req > total_active_wells:
             st.error(f"❌ 空间严重不足！分配 {total_wells_req} 孔，但可用仅 {total_active_wells} 孔。")
         else:
-            with st.spinner("🚀 算法引擎全速运转中..."):
+            with st.spinner("🚀 极速引擎全速运转中... (O(1) 哈希映射已就绪)"):
+                
+                well_meta = {}
+                total_r, total_c = len(all_rows), len(all_cols)
+                for r_idx, r in enumerate(all_rows):
+                    for c_idx, c in enumerate(all_cols):
+                        well_meta[(r, c)] = (r_idx, c_idx, get_quadrant(r_idx, c_idx, total_r, total_c))
+                        
                 if "Monte Carlo" in engine_choice:
                     success, layout, gene_coords, ctrl_coords, attempts, elapsed, strategy = run_monte_carlo(
-                        genes_dict, ctrls_dict, all_rows, all_cols, available_wells, seed=st.session_state.seed_val
+                        genes_dict, ctrls_dict, all_rows, all_cols, available_wells, well_meta, seed=st.session_state.seed_val
                     )
                 else:
                     success, layout, gene_coords, ctrl_coords, attempts, elapsed, strategy = run_simulated_annealing(
-                        genes_dict, ctrls_dict, all_rows, all_cols, available_wells, seed=st.session_state.seed_val
+                        genes_dict, ctrls_dict, all_rows, all_cols, available_wells, well_meta, seed=st.session_state.seed_val
                     )
                 
             if not success:
@@ -422,20 +507,20 @@ with tab1:
                 for g, coords in gene_coords.items():
                     for i, (r1, c1) in enumerate(coords):
                         for r2, c2 in coords[i+1:]:
-                            r1_i, c1_i = all_rows.index(r1), all_cols.index(c1)
-                            r2_i, c2_i = all_rows.index(r2), all_cols.index(c2)
+                            r1_i, c1_i, _ = well_meta[(r1, c1)]
+                            r2_i, c2_i, _ = well_meta[(r2, c2)]
                             if (r1_i - r2_i)**2 + (c1_i - c2_i)**2 <= 2:
                                 err_gene_corner.append(f"**{g}** 局部接触 ({r1}{c1} ↔ {r2}{c2})")
                                 conflicts.update([(r1, c1), (r2, c2)])
 
                 for g, coords in gene_coords.items():
-                    quads = [get_quadrant(all_rows.index(r), all_cols.index(c), len(all_rows), len(all_cols)) for r, c in coords]
+                    quads = [well_meta[(r,c)][2] for r, c in coords]
                     q_counts = [quads.count(q) for q in [1,2,3,4]]
                     if max(q_counts) - min(q_counts) > 1:
                         err_gene_quad.append(f"**{g}** 分布失衡 (Q1:{q_counts[0]} Q2:{q_counts[1]} Q3:{q_counts[2]} Q4:{q_counts[3]})")
 
                 for c_name, coords in ctrl_coords.items():
-                    quads = [get_quadrant(all_rows.index(r), all_cols.index(c), len(all_rows), len(all_cols)) for r, c in coords]
+                    quads = [well_meta[(r,c)][2] for r, c in coords]
                     q_counts = [quads.count(q) for q in [1,2,3,4]]
                     if max(q_counts) - min(q_counts) > 1:
                         err_ctrl_quad.append(f"**{c_name}** 分布失衡")
@@ -443,13 +528,13 @@ with tab1:
                 for c_name, coords in ctrl_coords.items():
                     for i, (r1, c1) in enumerate(coords):
                         for r2, c2 in coords[i+1:]:
-                            r1_i, c1_i = all_rows.index(r1), all_cols.index(c1)
-                            r2_i, c2_i = all_rows.index(r2), all_cols.index(c2)
+                            r1_i, c1_i, _ = well_meta[(r1, c1)]
+                            r2_i, c2_i, _ = well_meta[(r2, c2)]
                             if (r1_i - r2_i)**2 + (c1_i - c2_i)**2 <= 2:
                                 err_ctrl_corner.append(f"**{c_name}** 内部拥挤 ({r1}{c1} ↔ {r2}{c2})")
                                 conflicts.update([(r1, c1), (r2, c2)])
 
-                # ---------------- 🏆 核心加权打分系统 ----------------
+                # ---------------- 🏆 核心加权打分系统 (贴合人类直觉面板) ----------------
                 base_score = 100
                 deduct_row_col = len(err_row_col) * 30
                 deduct_gene_quad = len(err_gene_quad) * 20
@@ -474,8 +559,7 @@ with tab1:
                             row_data.append("[排除]")
                         else:
                             val = layout.get((r, c), "")
-                            if (r, c) in conflicts and val != "":
-                                val += " ⚠️"
+                            if (r, c) in conflicts and val != "": val += " ⚠️"
                             row_data.append(val)
                     plate_matrix.append(row_data)
                     
@@ -486,7 +570,7 @@ with tab1:
                 cell_width = "40px" if not is_96 else "65px"
                 cell_font = "10px" if not is_96 else "14px"
 
-                st.success(f"✅ 排布计算完成！驱动核心: {engine_choice.split()[1]} | 耗时 {elapsed:.3f} 秒，迭代 {attempts} 次。")
+                st.success(f"✅ 排布计算完成！驱动核心: {engine_choice.split()[1]} | 耗时 {elapsed:.3f} 秒，计算迭代 {attempts} 次。")
                 
                 st.markdown(f"""
                 <div style="background-color: #f8fafc; border-radius: 10px; padding: 20px; border-left: 8px solid {grade_color}; margin-bottom: 20px;">
@@ -530,10 +614,10 @@ with tab1:
                         with col.expander("🔍 详情"):
                             st.markdown("\n".join([f"- {e}" for e in err_list]))
 
-                render_metric(c1, "1. 行列绝对隔离 (-30/个)", "0 冲突", err_row_col, "inverse")
-                render_metric(c2, "2. 靶点防共角 (-15/个)", "0 接触", err_gene_corner, "inverse")
-                render_metric(c3, "3. 靶点象限平滑 (-20/个)", "平滑分布", err_gene_quad, "inverse")
-                render_metric(c4, "4. 各对照组平滑 (-10/个)", "平滑分布", err_ctrl_quad, "inverse")
-                render_metric(c5, "5. 同类对照防聚集 (-15/个)", "0 扎堆", err_ctrl_corner, "off")
+                render_metric(c1, "1. 靶点/对照防行列冲突", "0 冲突", err_row_col, "inverse")
+                render_metric(c2, "2. 靶点防共角接触", "0 接触", err_gene_corner, "inverse")
+                render_metric(c3, "3. 靶点多象限平滑均布", "平滑分布", err_gene_quad, "inverse")
+                render_metric(c4, "4. 同类对照防聚集接触", "0 扎堆", err_ctrl_corner, "inverse")
+                render_metric(c5, "5. 对照多象限平滑均布", "平滑分布", err_ctrl_quad, "off")
 
                 st.markdown("<div style='margin-top: 30px; text-align: right; color: #94a3b8; font-size: 0.8em; font-family: monospace;'>Powered by TDIMP Dual-Engine Architecture | Designed by Fxq</div>", unsafe_allow_html=True)
